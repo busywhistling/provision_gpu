@@ -1,0 +1,4 @@
+encryptionsalt: XXXXXXXXXX
+config:
+  aws:region: eu-central-1
+  aws:profile: default
