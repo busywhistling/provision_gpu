@@ -1,92 +1,73 @@
- # AWS Python S3 Bucket Pulumi Template
+# AWS GPU EC2 Instance (Pulumi)
 
- A minimal Pulumi template for provisioning a single AWS S3 bucket using Python.
+Provision a GPU EC2 instance on AWS for deep learning / GPU work using Pulumi and Python.
 
- ## Overview
+## Overview
 
- This template provisions an S3 bucket (`pulumi_aws.s3.BucketV2`) in your AWS account and exports its ID as an output. It’s an ideal starting point when:
-  - You want to learn Pulumi with AWS in Python.
-  - You need a barebones S3 bucket deployment to build upon.
-  - You prefer a minimal template without extra dependencies.
+This project creates a `g4dn.xlarge` GPU instance in `eu-central-1` using the **Deep Learning Base AMI with Single CUDA (Ubuntu 24.04)**, with:
 
- ## Prerequisites
+- SSH key pair and security group allowing SSH access
+- 100 GB gp3 root volume
+- A user-data startup script that:
+  - Sets a password for the `ubuntu` user
+  - Installs `fish` shell and `nvidia-cuda-toolkit`
+  - Sets up Homebrew, fisher, and dev tools (`neovim`, `yazi`, `btop`, `fastfetch`, `duf`, `uv`)
+  - Reboots the instance after setup
 
- - An AWS account with permissions to create S3 buckets.
- - AWS credentials configured in your environment (for example via AWS CLI or environment variables).
- - Python 3.6 or later installed.
- - Pulumi CLI already installed and logged in.
+## Prerequisites
 
- ## Getting Started
+- An AWS account with permissions to create EC2 instances, security groups, and key pairs.
+- AWS credentials configured in your environment (via AWS CLI or environment variables).
+- Python 3.13 or later installed.
+- [uv](https://docs.astral.sh/uv/) installed.
+- Pulumi CLI already installed and logged in.
+- An SSH public key at `~/.ssh/id_ed25519.pub` (or update the path in `__main__.py`).
 
- 1. Generate a new project from this template:
-    ```bash
-    pulumi new aws-python
-    ```
- 2. Follow the prompts to set your project name and AWS region (default: `us-east-1`).
- 3. Change into your project directory:
-    ```bash
-    cd <project-name>
-    ```
- 4. Preview the planned changes:
-    ```bash
-    pulumi preview
-    ```
- 5. Deploy the stack:
-    ```bash
-    pulumi up
-    ```
- 6. Tear down when finished:
-    ```bash
-    pulumi destroy
-    ```
+## Getting Started
 
- ## Project Layout
+1. Preview the planned changes:
+   ```bash
+   pulumi preview
+   ```
 
- After running `pulumi new`, your directory will look like:
- ```
- ├── __main__.py         # Entry point of the Pulumi program
- ├── Pulumi.yaml         # Project metadata and template configuration
- ├── requirements.txt    # Python dependencies
- └── Pulumi.<stack>.yaml # Stack-specific configuration (e.g., Pulumi.dev.yaml)
- ```
+2. Deploy the stack:
+   ```bash
+   pulumi up
+   ```
 
- ## Configuration
+3. SSH into the instance once deployed:
+   ```bash
+   ssh ubuntu@$(pulumi stack output public_ip)
+   ```
 
- This template defines the following config value:
+4. Tear down when finished:
+   ```bash
+   pulumi destroy
+   ```
 
- - `aws:region` (string)
-   The AWS region to deploy resources into.
-   Default: `us-east-1`
+## Configuration
 
- View or update configuration with:
- ```bash
- pulumi config get aws:region
- pulumi config set aws:region us-west-2
- ```
+Edit `__main__.py` to customize:
 
- ## Outputs
+- `INSTANCE_TYPE` — GPU instance type (default: `g4dn.xlarge`; alternatives: `g5.xlarge`, `p3.2xlarge`)
+- `REGION` — AWS region (default: `eu-central-1`)
+- `PASSWORD` — password for the `ubuntu` user
+- Key pair public key path
 
- Once deployed, the stack exports:
+## Outputs
 
- - `bucket_name` — the ID of the created S3 bucket.
+The stack exports:
 
- Retrieve outputs with:
- ```bash
- pulumi stack output bucket_name
- ```
+- `instance_id` — the EC2 instance ID
+- `public_ip` — the instance's public IP address
+- `ami_used` — the AMI ID used for the instance
 
- ## Next Steps
+Retrieve outputs with:
+```bash
+pulumi stack output public_ip
+```
 
- - Customize `__main__.py` to add or configure additional resources.
- - Explore the Pulumi AWS SDK: https://www.pulumi.com/registry/packages/aws/
- - Break your infrastructure into modules for better organization.
- - Integrate into CI/CD pipelines for automated deployments.
+## Notes
 
- ## Help and Community
-
- If you have questions or need assistance:
- - Pulumi Documentation: https://www.pulumi.com/docs/
- - Community Slack: https://slack.pulumi.com/
- - GitHub Issues: https://github.com/pulumi/pulumi/issues
-
- Contributions and feedback are always welcome!
+- The SSH security group allows access from `0.0.0.0/0`. Restrict to your IP in production.
+- The user-data script reboots the instance after setup. Allow a few minutes after `pulumi up` before connecting.
