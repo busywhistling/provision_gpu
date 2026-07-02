@@ -1,64 +1,25 @@
 """An AWS Python Pulumi program"""
 
-import textwrap
+import asyncio
+import concurrent.futures
+import pathlib
 
 import pulumi
 import pulumi_aws as aws
 
-PASSWORD = "yourpasswordhere"
+from get_secrets import get_secret
+
+PASSWORD = concurrent.futures.ThreadPoolExecutor().submit(
+    lambda: asyncio.run(get_secret())
+).result()
 
 # --- Startup Script ---
-user_data = textwrap.dedent(f"""\
-#!/bin/bash
-set -e
-exec > /var/log/user-data.log 2>&1   # Log everything for debugging
-
-echo "=== Starting setup ==="
-
-# Set a password for the ubuntu user so Homebrew's sudo prompts work
-# Generate hash and set password in one shot, bypassing PAM entirely
-HASHED=$(openssl passwd -6 '{PASSWORD}')
-sudo usermod -p "$HASHED" ubuntu
-
-# Example: system updates
-sudo add-apt-repository ppa:fish-shell/release-4 -y
-sudo apt update -y
-sudo apt upgrade -y
-
-# Example: install packages via brew
-sudo apt install fish nvidia-cuda-toolkit -y
-sudo chsh -s /usr/bin/fish ubuntu
-
-sudo apt autoremove -y
-
-fish << 'EOF'
-  # Install brew
-  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-  # Setup brew completions in fish shell
-  echo >> /home/ubuntu/.config/fish/config.fish
-  echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv fish)"' >> /home/ubuntu/.config/fish/config.fish
-  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv fish)"
-
-  # Install fisher
-  curl -sL https://raw.githubusercontent.com/jorgebucaran/fisher/main/functions/fisher.fish | source && fisher install jorgebucaran/fisher
-  # fisher install IlanCosman/tide@v6
-
-  brew install neovim yazi btop fastfetch duf uv
-EOF
-
-# The above EOF needs to be aligned to the very left, and has to be the only
-# line, with no trailing whitespace
-
-# Delete licenses and unneeded files
-rm BUILD_FROM_SOURCE_PACKAGES_LICENCES LINUX_PACKAGES_LICENSES LINUX_PACKAGES_LIST OSSNvidiaDriver_v595.71.05_license.txt
-rm -rf nvidia-acknowledgements gds-nvidia-fs
-
-printf "\nREBOOTING\n"
-
-echo "=== Setup complete ==="
-sudo reboot
-""")
+_user_data_template = pathlib.Path(__file__).parent / "setup-host.sh"
+user_data = _user_data_template.read_text().replace(
+    "set -e",
+    f"set -e\nexport EC2_USER_PASSWORD='{PASSWORD}'",
+    1,
+)
 
 # --- Config ---
 # GPU instance types: g4dn.xlarge (cheapest, ~$0.526/hr), g5.xlarge, p3.2xlarge
