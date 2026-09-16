@@ -25,22 +25,17 @@ This project creates a `g4dn.xlarge` GPU instance in `eu-central-1` using the **
 
 ## Getting Started
 
-1. Preview the planned changes:
-   ```bash
-   pulumi preview
-   ```
-
-2. Deploy the stack:
+1. Deploy the stack (shows the diff and asks for confirmation before applying):
    ```bash
    pulumi up
    ```
 
-3. SSH into the instance once deployed:
+2. SSH into the instance once deployed:
    ```bash
    ssh ubuntu@$(pulumi stack output public_ip)
    ```
 
-4. Tear down when finished:
+3. Tear down when finished:
    ```bash
    pulumi destroy
    ```

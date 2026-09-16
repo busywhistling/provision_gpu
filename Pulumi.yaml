@@ -4,6 +4,8 @@ runtime:
   name: python
   options:
     toolchain: uv
+    # typechecker: ty # ty is not supported yet
+main: src/main.py
 config:
   pulumi:tags:
     value:

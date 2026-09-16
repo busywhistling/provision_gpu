@@ -1,5 +1,12 @@
 #!/bin/bash
 set -e
+
+# Never prompt over SSH: no needrestart TUI, no dpkg conffile dialogs.
+# (needrestart would otherwise hang waiting on stdin and, because this
+# script is piped via `bash -s`, eat the rest of the script as input.)
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+CONF_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 if [ "$(id -u)" -eq 0 ]; then
   exec > /var/log/user-data.log 2>&1   # Log everything for debugging
 fi
@@ -14,6 +21,38 @@ step_done() {
   sudo grep -qx "$1" "$MARK_FILE" 2>/dev/null
 }
 
+# First-boot unattended-upgrades may hold the dpkg lock (e.g. right after `apt-get update`).
+# Rather than failing, wait for it to finish before touching apt.
+wait_for_apt_locks() {
+  local waited=0
+  while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+        /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do
+    if [ $waited -ge 1800 ]; then
+      echo "Timed out waiting for apt/dpkg locks after 30 min" >&2
+      return 1
+    fi
+    echo "Another apt/dpkg process is running (probably unattended-upgrades); waiting... ($waited s)"
+    sleep 15
+    waited=$((waited + 15))
+  done
+}
+
+# Background apt jobs (unattended-upgrades, apt-daily timers) race this script
+# for the dpkg/apt locks. Mask them for the duration of setup and re-enable
+# at exit so the machine stays healthy afterwards.
+disable_background_apt() {
+  sudo systemctl stop --quiet unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+  sudo systemctl mask --quiet unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  wait_for_apt_locks
+}
+
+enable_background_apt() {
+  sudo systemctl unmask --quiet unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  sudo systemctl start --quiet apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+}
+
+disable_background_apt
+
 echo "=== Starting setup ==="
 
 # Set a password for the ubuntu user so Homebrew's sudo prompts work
@@ -26,15 +65,17 @@ fi
 
 # Example: system updates
 if ! step_done "add-fish-ppa"; then
-  sudo add-apt-repository ppa:fish-shell/release-4 -y
+  sudo add-apt-repository ppa:fish-shell/release-4 -y < /dev/null
   record_step "add-fish-ppa"
 fi
 
-sudo apt update -y
-sudo apt upgrade -y
+sudo apt-get update -y < /dev/null
+wait_for_apt_locks
+sudo apt-get $CONF_OPTS upgrade -y < /dev/null
 
 if ! step_done "apt-packages"; then
-  sudo apt install fish nvidia-cuda-toolkit -y
+  wait_for_apt_locks
+  sudo apt-get $CONF_OPTS install fish nvidia-cuda-toolkit -y < /dev/null
   record_step "apt-packages"
 fi
 
@@ -42,7 +83,8 @@ if [ "$(getent passwd ubuntu | cut -d: -f7)" != "/usr/bin/fish" ]; then
   sudo chsh -s /usr/bin/fish ubuntu
 fi
 
-sudo apt autoremove -y
+wait_for_apt_locks
+sudo apt-get autoremove -y < /dev/null
 
 fish << 'EOF'
   # Install brew
@@ -71,8 +113,11 @@ EOF
 # line, with no trailing whitespace
 
 # Delete licenses and unneeded files (ignore errors if already removed)
-rm -f BUILD_FROM_SOURCE_PACKAGES_LICENCES LINUX_PACKAGES_LICENSES LINUX_PACKAGES_LIST OSSNvidiaDriver_v595.71.05_license.txt
+rm -f BUILD_FROM_SOURCE_PACKAGES_LICENCES LINUX_PACKAGES_LICENSES LINUX_PACKAGES_LIST OSSNvidiaDriver_*_license.txt 
 rm -rf nvidia-acknowledgements gds-nvidia-fs
+
+# Hand background apt jobs back (both before reboot and on repeat runs)
+enable_background_apt
 
 if [ ! -f "$SETUP_FLAG" ]; then
   printf "\nREBOOTING\n"

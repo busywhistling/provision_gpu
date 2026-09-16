@@ -40,13 +40,16 @@ else
     echo "AWS SSO already logged in."
 end
 
-# --- 2. Get Pulumi passphrase from 1Password ---
-echo "Retrieving Pulumi passphrase from 1Password..."
+# --- 2. Get Pulumi passphrase and EC2 password from 1Password ---
+echo "Retrieving secrets from 1Password..."
 set pulumi_passphrase (op read "op://Private/Pulumi/passphrase")
 or exit 1
+set ec2_password (op read "op://Private/EC2/password")
+or exit 1
+set -x EC2_USER_PASSWORD $ec2_password
 
 # --- 3. Run pulumi up ---
-echo "Running pulumi up..."
+echo "Running pulumi..."
 set -x PULUMI_CONFIG_PASSPHRASE $pulumi_passphrase
 uv run pulumi up --stack $PULUMI_STACK --yes
 or exit 1
@@ -65,28 +68,25 @@ echo "SSH port is open!"
 
 sleep 5
 
-# --- 6. Get EC2 user password from 1Password ---
-echo "Retrieving EC2 user password from 1Password..."
-set ec2_password (op read "op://Private/EC2/password")
-or exit 1
-
-# --- 7. SSH and run setup-host.sh ---
-# Capture output to detect reboot from "REBOOTING" marker.
+# --- 6. SSH and run setup-host.sh ---
+# Stream output live (so a hang is visible) and tee it to a file so we can
+# still detect the "REBOOTING" marker afterwards.
 # We can't rely on SSH exit code: `sudo reboot` may return 0 before the
 # machine goes down, making SSH exit cleanly even though a reboot is pending.
 echo "Running setup-host.sh on the remote instance..."
-set ssh_output (ssh -o StrictHostKeyChecking=accept-new $SSH_USER@$public_ip "EC2_USER_PASSWORD='$ec2_password' bash -s" < $SETUP_SCRIPT 2>&1; or echo "")
-set ssh_exit $status
-
-# Print what we captured so the user sees the remote progress
-printf '%s\n' $ssh_output
+set ssh_log_file (mktemp)
+ssh -o StrictHostKeyChecking=accept-new $SSH_USER@$public_ip \
+    "EC2_USER_PASSWORD='$ec2_password' bash -s" < $SETUP_SCRIPT 2>&1 | tee $ssh_log_file
+set ssh_exit $pipestatus[1]
+set ssh_output (cat $ssh_log_file)
+rm $ssh_log_file
 
 if test $ssh_exit -ne 0 -a $ssh_exit -ne 255
     echo "Error: setup-host.sh failed with exit code $ssh_exit."
     exit 1
 end
 
-# --- 8. Detect reboot from output and wait accordingly ---
+# --- 7. Detect reboot from output and wait accordingly ---
 if string match -q "*REBOOTING*" -- (string collect -- $ssh_output)
     echo "Reboot triggered, waiting for SSH to go down..."
 
@@ -113,7 +113,7 @@ else
     echo "setup-host.sh completed (no reboot needed)."
 end
 
-# --- 9. Verify setup completed on the remote ---
+# --- 8. Verify setup completed on the remote ---
 sleep 5
 echo "Verifying setup completion..."
 set verify (ssh -o StrictHostKeyChecking=accept-new $SSH_USER@$public_ip "test -f /var/lib/.setup-host-done && echo ok || echo fail" 2>/dev/null; or echo "fail")
@@ -123,3 +123,6 @@ if test "$verify" != "ok"
 end
 
 echo "Setup complete! Instance is ready at $public_ip"
+echo ""
+echo "You can ssh using:"
+echo "ssh ubuntu@$public_ip"
