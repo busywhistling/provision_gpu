@@ -1,5 +1,7 @@
-setup:
-  fish setup-infra.fish
+# GPU_TYPE is required — pass a named preset or a full EC2 instance type.
+# Run `just setup` with no argument to see the available options.
+setup gpu_type='':
+  fish setup-infra.fish {{gpu_type}}
   afplay /System/Library/Sounds/Glass.aiff
 
 destroy:

@@ -4,7 +4,7 @@ Provision a GPU EC2 instance on AWS for deep learning / GPU work using Pulumi an
 
 ## Overview
 
-This project creates a `g4dn.xlarge` GPU instance in `eu-central-1` using the **Deep Learning Base AMI with Single CUDA (Ubuntu 24.04)**, with:
+This project creates a GPU EC2 instance in `eu-central-1` using the **Deep Learning Base AMI with Single CUDA (Ubuntu 24.04)**. The GPU instance type must be supplied at deploy time via `just setup <type>` (see Configuration) — e.g. `g4dn.xlarge` (T4) or `g7e.2xlarge` (RTX PRO 6000 Blackwell), with:
 
 - SSH key pair and security group allowing SSH access
 - 100 GB gp3 root volume
@@ -27,7 +27,7 @@ This project creates a `g4dn.xlarge` GPU instance in `eu-central-1` using the **
 
 1. Deploy the stack (shows the diff and asks for confirmation before applying):
    ```bash
-   pulumi up
+   just setup g7e.2xlarge
    ```
 
 2. SSH into the instance once deployed:
@@ -42,9 +42,24 @@ This project creates a `g4dn.xlarge` GPU instance in `eu-central-1` using the **
 
 ## Configuration
 
-Edit `__main__.py` to customize:
+The GPU instance type is required — there is no default. Pass it to `just setup`:
 
-- `INSTANCE_TYPE` — GPU instance type (default: `g4dn.xlarge`; alternatives: `g5.xlarge`, `p3.2xlarge`)
+```
+just setup <type>
+```
+
+where `<type>` is either a named preset or a full EC2 instance type:
+
+| Preset | Instance type | GPU | Notes |
+|---|---|---|---|
+| `t4` | `g4dn.xlarge` | 1× T4 (16 GB) | Cheapest, ~$0.53/hr |
+| `a10g` | `g5.xlarge` | 1× A10G (24 GB) | ~$1.01/hr |
+| `l40s` | `g6e.xlarge` | 1× L40S (48 GB) | ~$1.60/hr |
+| `rtx6000` | `g7e.2xlarge` | 1× RTX PRO 6000 Blackwell (96 GB) | ~$3.40+/hr, available in `eu-central-1` |
+
+Full EC2 types from the GPU families (`g4ad`, `g4dn`, `g5`, `g5g`, `g6`, `g6e`, `g7`, `g7e`, `p3`, `p4d`, `p4de`, `p5`, `p5e`, `p5en`) are also accepted, e.g. `just setup g7e.12xlarge` for 2× RTX PRO 6000. The value is validated and stored as Pulumi config (`gpu:instance_type`); changing it replaces the EC2 instance.
+
+Other settings live in `src/cuda_instance.py` / `src/main.py`:
 - `REGION` — AWS region (default: `eu-central-1`)
 - `PASSWORD` — password for the `ubuntu` user
 - Key pair public key path

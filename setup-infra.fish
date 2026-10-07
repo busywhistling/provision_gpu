@@ -7,6 +7,34 @@ set SSH_USER "ubuntu"
 set SETUP_SCRIPT "setup-host.sh"
 set SSH_TIMEOUT 300
 
+# --- Helper: print GPU instance type usage (presets + EC2 families) ---
+function print_gpu_usage --description "Show available GPU instance type options"
+    echo "Usage: just setup <gpu_type>"
+    echo ""
+    echo "Named presets:"
+    echo "  t4       g4dn.xlarge    1x NVIDIA T4 16 GB                 (~\$0.53/hr)"
+    echo "  a10g     g5.xlarge      1x NVIDIA A10G 24 GB               (~\$1.01/hr)"
+    echo "  l40s     g6e.xlarge     1x NVIDIA L40S 48 GB               (~\$1.60/hr)"
+    echo "  rtx6000  g7e.2xlarge    1x RTX PRO 6000 Blackwell 96 GB    (~\$3.40+/hr)"
+    echo ""
+    echo "Or any full EC2 GPU instance type (validated against these families):"
+    echo "  g4ad g4dn g5 g5g g6 g6e g7 g7e p3 p4d p4de p5 p5e p5en"
+    echo ""
+    echo "Examples:"
+    echo "  just setup t4"
+    echo "  just setup rtx6000"
+    echo "  just setup g7e.12xlarge   (2x RTX PRO 6000)"
+end
+
+# --- Require the GPU instance type argument ---
+set gpu_type $argv[1]
+if test -z "$gpu_type"
+    echo "Error: GPU instance type is required — there is no default."
+    echo ""
+    print_gpu_usage
+    exit 1
+end
+
 # --- Ensure we're in the script's directory ---
 cd (dirname (status --current-filename))
 
@@ -49,6 +77,10 @@ or exit 1
 set -x EC2_USER_PASSWORD $ec2_password
 
 # --- 3. Run pulumi up ---
+echo "Setting GPU instance type to '$gpu_type'..."
+uv run pulumi config set --stack $PULUMI_STACK gpu:instance_type $gpu_type
+or exit 1
+
 echo "Running pulumi..."
 set -x PULUMI_CONFIG_PASSPHRASE $pulumi_passphrase
 uv run pulumi up --stack $PULUMI_STACK --yes
@@ -67,6 +99,13 @@ or exit 1
 echo "SSH port is open!"
 
 sleep 5
+
+# --- 5b. Copy the chezmoi source repo to the instance ---
+# Uploaded before setup-host.sh runs so its clone step can pick it up.
+echo "Uploading chezmoi source repo to $SSH_USER@$public_ip:~/.local/chezmoi.git..."
+ssh -o StrictHostKeyChecking=accept-new $SSH_USER@$public_ip "mkdir -p ~/.local"
+scp -r -o StrictHostKeyChecking=accept-new $HOME/.local/share/chezmoi_for_vm.git $SSH_USER@$public_ip:.local/chezmoi.git
+or exit 1
 
 # --- 6. SSH and run setup-host.sh ---
 # Stream output live (so a hang is visible) and tee it to a file so we can

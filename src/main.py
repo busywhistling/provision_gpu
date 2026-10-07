@@ -19,6 +19,7 @@ def main():
 
     # --- Outputs ---
     pulumi.export("instance_id", instance.id)
+    pulumi.export("instance_type", instance.instance_type)
     pulumi.export("public_ip", instance.public_ip)
     pulumi.export("ami_used", ami.id)
 

@@ -75,7 +75,7 @@ sudo apt-get $CONF_OPTS upgrade -y < /dev/null
 
 if ! step_done "apt-packages"; then
   wait_for_apt_locks
-  sudo apt-get $CONF_OPTS install fish nvidia-cuda-toolkit -y < /dev/null
+  sudo apt-get $CONF_OPTS install fish git nvidia-cuda-toolkit -y < /dev/null
   record_step "apt-packages"
 fi
 
@@ -106,8 +106,32 @@ fish << 'EOF'
   end
   # fisher install IlanCosman/tide@v6
 
-  brew install neovim yazi btop fastfetch duf uv
+  brew install neovim yazi btop fastfetch duf uv llama.cpp nvtop chezmoi
 EOF
+
+# Clone the chezmoi source repo that setup-infra.fish uploaded to
+# ~/.local/chezmoi.git, into the standard source dir, so that a later
+# `chezmoi update` (git pull + apply) has something to pull from.
+# Run as ubuntu: when this script is invoked as cloud-init user-data it
+# executes as root, and a root-owned chezmoi source would break `chezmoi`.
+if ! step_done "chezmoi-clone"; then
+  if [ -d /home/ubuntu/.local/chezmoi.git ]; then
+    if [ -d /home/ubuntu/.local/share/chezmoi ]; then
+      echo "chezmoi source dir already exists; skipping clone"
+      record_step "chezmoi-clone"
+    else
+      sudo -u ubuntu -H git clone /home/ubuntu/.local/chezmoi.git /home/ubuntu/.local/share/chezmoi < /dev/null
+      # Apply the config immediately so the box is usable without a manual
+      # `chezmoi update`. --force makes overwrite conflicts non-interactive.
+      sudo -u ubuntu -H fish -c \
+        'eval (/home/linuxbrew/.linuxbrew/bin/brew shellenv fish); chezmoi update --force' \
+        < /dev/null
+      record_step "chezmoi-clone"
+    fi
+  else
+    echo "No ~/.local/chezmoi.git uploaded yet; not cloning chezmoi source (will clone on a later run)"
+  fi
+fi
 
 # The above EOF needs to be aligned to the very left, and has to be the only
 # line, with no trailing whitespace
