@@ -1,7 +1,7 @@
 [project]
 name = "gpu-instance"
 version = "0.1.0"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "onepassword-sdk>=0.4.0",
     "pulumi>=3.0.0,<4.0.0",

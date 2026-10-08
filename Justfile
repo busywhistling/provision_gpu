@@ -6,4 +6,8 @@ setup gpu_type='':
 
 destroy:
   PULUMI_CONFIG_PASSPHRASE=$(op read "op://Private/Pulumi/passphrase") pulumi destroy --stack=gpu --yes
+  rm -f ~/.ssh/aws_hosts
   afplay /System/Library/Sounds/Glass.aiff
+
+refresh:
+  PULUMI_CONFIG_PASSPHRASE=$(op read "op://Private/Pulumi/passphrase") pulumi refresh --stack=gpu --yes

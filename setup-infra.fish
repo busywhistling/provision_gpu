@@ -6,6 +6,9 @@ set PULUMI_STACK "gpu"
 set SSH_USER "ubuntu"
 set SETUP_SCRIPT "setup-host.sh"
 set SSH_TIMEOUT 300
+# Fail SSH connections fast instead of hanging for minutes (e.g. probing an
+# instance that drops again mid-reboot), and bail out of dead connections.
+set SSH_OPTS -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3
 
 # --- Helper: print GPU instance type usage (presets + EC2 families) ---
 function print_gpu_usage --description "Show available GPU instance type options"
@@ -57,15 +60,42 @@ function wait_for_ssh --description "Wait until SSH port is open on the given ho
 end
 
 # --- 1. Check AWS SSO login ---
-echo "Checking AWS SSO login for profile '$AWS_PROFILE'..."
+# Use the profile Pulumi will actually run with (aws:profile in the stack
+# config, falling back to the script default), not $AWS_PROFILE. Checking the
+# wrong profile can pass while Pulumi's own profile has an expired SSO session.
+set pulumi_profile (uv run pulumi config get aws:profile --stack $PULUMI_STACK 2>/dev/null)
+if test -z "$pulumi_profile"
+    set pulumi_profile $AWS_PROFILE
+end
 
-if not aws sts get-caller-identity --profile $AWS_PROFILE >/dev/null 2>&1
-    echo "AWS SSO session expired or not logged in. Logging in..."
-    aws sso login --profile $AWS_PROFILE
-    or exit 1
-    echo "AWS SSO login successful."
-else
-    echo "AWS SSO already logged in."
+echo "Checking AWS SSO login for profile '$pulumi_profile'..."
+
+# NOTE: `aws sts get-caller-identity` can succeed via the CLI's own role-credential
+# cache (~/.aws/cli/cache) even after the SSO access token that the Pulumi AWS
+# provider reads (~/.aws/sso/cache) has expired — which then errors with
+# "Failed to refresh cached SSO credentials". So for SSO profiles we check the
+# SSO token file itself (check_sso_token.py) instead of a CLI call.
+set sso_state (python3 (status dirname)/check_sso_token.py $pulumi_profile 2>/dev/null)
+switch $sso_state
+    case "expired"
+        echo "AWS SSO session expired. Logging in (browser will open)..."
+        aws sso login --profile $pulumi_profile
+        or exit 1
+        echo "AWS SSO login successful."
+    case "static"
+        echo "Profile '$pulumi_profile' does not use SSO; no SSO login needed."
+    case "*"
+        if test -z "$sso_state"
+            # Checker could not run — fall back to the CLI check.
+            if not aws sts get-caller-identity --profile $pulumi_profile >/dev/null 2>&1
+                echo "AWS SSO session expired or not logged in. Logging in..."
+                aws sso login --profile $pulumi_profile
+                or exit 1
+                echo "AWS SSO login successful."
+            end
+        else
+            echo "AWS SSO already logged in."
+        end
 end
 
 # --- 2. Get Pulumi passphrase and EC2 password from 1Password ---
@@ -92,6 +122,42 @@ set public_ip (pulumi stack output public_ip --stack $PULUMI_STACK)
 or exit 1
 echo "Instance public IP: $public_ip"
 
+# --- 4b. Register the instance in ~/.ssh so plain `ssh aws` works ---
+# The instance is ephemeral, so the alias's IP changes on every deploy:
+# rewrite a managed include file each run instead of a static config entry.
+# Works for ssh/scp/rsync/VS Code Remote-SSH, and survives without Pulumi.
+set -l ssh_dir $HOME/.ssh
+set -l aws_hosts_file $ssh_dir/aws_hosts
+
+mkdir -p $ssh_dir
+# Drop any stale host key for this IP first — short-lived instances can
+# recycle IPs, and a leftover key would block connecting with accept-new.
+ssh-keygen -R $public_ip > /dev/null 2>&1
+
+begin
+    echo "# Managed by provision_gpu/setup-infra.fish — do not edit"
+    echo "Host aws"
+    echo "  HostName $public_ip"
+    echo "  User $SSH_USER"
+    echo "  IdentityFile ~/.ssh/id_ed25519"
+    echo "  StrictHostKeyChecking accept-new"
+end > $aws_hosts_file
+chmod 600 $aws_hosts_file
+
+# One-time: include the managed file from ~/.ssh/config (prepend, so it
+# takes effect before any later Host * block).
+if not test -f $ssh_dir/config
+    echo "Include ~/.ssh/aws_hosts" > $ssh_dir/config
+    chmod 600 $ssh_dir/config
+else if not grep -qF ".ssh/aws_hosts" $ssh_dir/config
+    set -l tmp (mktemp)
+    echo "Include ~/.ssh/aws_hosts" > $tmp
+    cat $ssh_dir/config >> $tmp
+    mv $tmp $ssh_dir/config
+    chmod 600 $ssh_dir/config
+end
+echo "SSH alias registered: ssh aws → ubuntu@$public_ip"
+
 # --- 5. Wait for SSH to be reachable ---
 echo "Waiting for SSH to be available at $public_ip:22..."
 wait_for_ssh $public_ip
@@ -102,20 +168,82 @@ sleep 5
 
 # --- 5b. Copy the chezmoi source repo to the instance ---
 # Uploaded before setup-host.sh runs so its clone step can pick it up.
-echo "Uploading chezmoi source repo to $SSH_USER@$public_ip:~/.local/chezmoi.git..."
-ssh -o StrictHostKeyChecking=accept-new $SSH_USER@$public_ip "mkdir -p ~/.local"
-scp -r -o StrictHostKeyChecking=accept-new $HOME/.local/share/chezmoi_for_vm.git $SSH_USER@$public_ip:.local/chezmoi.git
-or exit 1
+# Idempotent: skip the upload when the remote copy is already at the same
+# commit as the local one (both are git repos, so HEAD is the fingerprint).
+# If the local repo has new commits, the hash differs and it re-uploads.
+set -l chezmoi_src $HOME/.local/share/chezmoi_for_vm.git
+set -l local_head (git -C $chezmoi_src rev-parse HEAD 2>/dev/null)
+set -l remote_head (ssh $SSH_OPTS $SSH_USER@$public_ip \
+    "git -C ~/.local/chezmoi.git rev-parse HEAD 2>/dev/null" < /dev/null)
+if test -n "$local_head"; and test "$local_head" = "$remote_head"
+    echo "chezmoi.git already up to date (HEAD $local_head); skipping upload."
+else
+    echo "Uploading chezmoi source repo to $SSH_USER@$public_ip:~/.local/chezmoi.git..."
+    ssh $SSH_OPTS $SSH_USER@$public_ip "mkdir -p ~/.local"
+    scp $SSH_OPTS -r $chezmoi_src $SSH_USER@$public_ip:.local/chezmoi.git
+    or exit 1
+end
+
+# --- 5c. Copy Ghostty's terminfo entry to the instance ---
+# Method 1 from the Ghostty docs (https://ghostty.org/docs/help/terminfo):
+# reconstruct the terminfo entry from the local terminfo database with
+# `infocmp -x xterm-ghostty` and compile it into the instance's system
+# database with `tic -x`. No app-bundle paths — this works on any OS with
+# Ghostty's terminfo visible to infocmp. (If the local ncurses is too old,
+# install Homebrew ncurses; `tic` may warn about the description
+# field being an alias on older versions — ignorable.)
+# The docs' one-liner streams infocmp straight into ssh (`infocmp ... |
+# ssh host -- tic -x -`), but we can't attach stdin to this session —
+# fish's shell-init on the instance would consume it. So infocmp output
+# goes base64-encoded through the command line, and tic compiles a file.
+function _ghostty_terminfo_source --description "Terminfo source for xterm-ghostty, via infocmp"
+    for cmp in infocmp /opt/homebrew/opt/ncurses/bin/infocmp /usr/local/opt/ncurses/bin/infocmp
+        if command -q $cmp
+            set -l src ($cmp -x xterm-ghostty 2>/dev/null)
+            if test (count $src) -gt 0
+                string join \n -- $src
+                return 0
+            end
+        end
+    end
+    return 1
+end
+
+# Idempotent: skip if the instance already has the xterm-ghostty entry
+# compiled into its system terminfo database.
+echo "Installing Ghostty terminfo on the instance..."
+set -l terminfo_present (ssh $SSH_OPTS $SSH_USER@$public_ip \
+    "infocmp -x xterm-ghostty > /dev/null 2>&1 && echo ok" < /dev/null 2>/dev/null)
+if test "$terminfo_present" = "ok"
+    echo "xterm-ghostty terminfo already installed; skipping."
+else if not _ghostty_terminfo_source > /dev/null
+    echo "No xterm-ghostty terminfo found locally (is Ghostty installed?); skipping."
+else
+    set -l b64 (_ghostty_terminfo_source | base64 | tr -d '\n')
+    ssh $SSH_OPTS $SSH_USER@$public_ip \
+        "echo $b64 | base64 -d > /tmp/ghostty.terminfo \
+         && sudo tic -x /tmp/ghostty.terminfo \
+         && rm -f /tmp/ghostty.terminfo \
+         && infocmp -x xterm-ghostty > /dev/null && echo terminfo-ok" \
+        < /dev/null
+end
 
 # --- 6. SSH and run setup-host.sh ---
+# Copy the script to the instance and run it from a file instead of piping
+# it over stdin. Reason: once the login shell is fish and ~/.config/fish/
+# config.fish contains a bare `source` (bisecting a brew-less box), fish's
+# shell-init can read and consume stdin, which would corrupt the streamed
+# script. Reading from /tmp/setup-host.sh is independent of stdin.
 # Stream output live (so a hang is visible) and tee it to a file so we can
 # still detect the "REBOOTING" marker afterwards.
 # We can't rely on SSH exit code: `sudo reboot` may return 0 before the
 # machine goes down, making SSH exit cleanly even though a reboot is pending.
 echo "Running setup-host.sh on the remote instance..."
+scp $SSH_OPTS $SETUP_SCRIPT $SSH_USER@$public_ip:/tmp/setup-host.sh
+or exit 1
 set ssh_log_file (mktemp)
-ssh -o StrictHostKeyChecking=accept-new $SSH_USER@$public_ip \
-    "EC2_USER_PASSWORD='$ec2_password' bash -s" < $SETUP_SCRIPT 2>&1 | tee $ssh_log_file
+ssh $SSH_OPTS $SSH_USER@$public_ip \
+    "env EC2_USER_PASSWORD='$ec2_password' bash /tmp/setup-host.sh < /dev/null" 2>&1 | tee $ssh_log_file
 set ssh_exit $pipestatus[1]
 set ssh_output (cat $ssh_log_file)
 rm $ssh_log_file
@@ -155,7 +283,7 @@ end
 # --- 8. Verify setup completed on the remote ---
 sleep 5
 echo "Verifying setup completion..."
-set verify (ssh -o StrictHostKeyChecking=accept-new $SSH_USER@$public_ip "test -f /var/lib/.setup-host-done && echo ok || echo fail" 2>/dev/null; or echo "fail")
+set verify (ssh $SSH_OPTS $SSH_USER@$public_ip "test -f /var/lib/.setup-host-done && echo ok || echo fail" 2>/dev/null; or echo "fail")
 if test "$verify" != "ok"
     echo "Error: Setup flag not found on remote. Setup may not have completed."
     exit 1

@@ -2,3 +2,4 @@ encryptionsalt: XXXXXXXXXX
 config:
   aws:region: eu-central-1
   aws:profile: default
+  gpu:instance_type: t4

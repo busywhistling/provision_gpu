@@ -63,15 +63,22 @@ if ! step_done "set-password"; then
   record_step "set-password"
 fi
 
-# Example: system updates
 if ! step_done "add-fish-ppa"; then
   sudo add-apt-repository ppa:fish-shell/release-4 -y < /dev/null
   record_step "add-fish-ppa"
 fi
 
-sudo apt-get update -y < /dev/null
-wait_for_apt_locks
-sudo apt-get $CONF_OPTS upgrade -y < /dev/null
+# --- Example: system updates ---
+# update/upgrade/autoremove are only needed once per machine; skip on re-runs
+# so repeated `just setup` calls don't redo a full apt cycle.
+if ! step_done "apt-upgrade"; then
+  sudo apt-get update -y < /dev/null
+  wait_for_apt_locks
+  sudo apt-get $CONF_OPTS upgrade -y < /dev/null
+  wait_for_apt_locks
+  sudo apt-get autoremove -y < /dev/null
+  record_step "apt-upgrade"
+fi
 
 if ! step_done "apt-packages"; then
   wait_for_apt_locks
@@ -83,21 +90,59 @@ if [ "$(getent passwd ubuntu | cut -d: -f7)" != "/usr/bin/fish" ]; then
   sudo chsh -s /usr/bin/fish ubuntu
 fi
 
-wait_for_apt_locks
-sudo apt-get autoremove -y < /dev/null
+# Install Homebrew *before* anything brew-dependent runs. The installer
+# refuses to run as root ("Don't run this as root!"), which would otherwise
+# silently fail inside the root cloud-init run and leave a broken dev shell.
+if ! [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+  echo "=== Installing Homebrew ==="
+  if [ "$(id -u)" -eq 0 ]; then
+    sudo -u ubuntu -H env NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  else
+    env NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  fi
+fi
 
+# Delay/failure poison pill: never "complete" setup with brew missing —
+# otherwise ~/.config/fish/config.fish (which calls `brew --prefix`) breaks
+# every login shell until brew is installed. exit 1 aborts before the
+# setup-complete flag is touched, so a re-run retries.
+if ! [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+  echo "ERROR: Homebrew failed to install. Aborting setup (re-run to retry)." >&2
+  exit 1
+fi
+
+# Make brew available before any user config runs. fish 4 sources config
+# files with parallelism, so a /etc/fish/conf.d hook alone can race (and
+# lose) against the user's conf.d/config.fish — which calls `brew --prefix`
+# unconditionally. /etc/environment is read by PAM for every login session,
+# so PATH is set before any shell config even starts.
+BREWDIR="/home/linuxbrew/.linuxbrew/bin"
+export PATH="$BREWDIR:$PATH"
+if ! grep -q "$BREWDIR" /etc/environment 2>/dev/null; then
+  if grep -q "^PATH=" /etc/environment 2>/dev/null; then
+    sudo sed -i "s|^PATH=.*|PATH=$PATH|" /etc/environment
+  else
+    echo "PATH=$PATH" | sudo tee -a /etc/environment > /dev/null
+  fi
+fi
+if ! [ -f /etc/fish/conf.d/00-brew.fish ]; then
+  sudo tee /etc/fish/conf.d/00-brew.fish > /dev/null <<'FISH'
+eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv fish)"
+FISH
+fi
+if ! grep -q "$BREWDIR" /etc/environment 2>/dev/null; then
+  echo "ERROR: Failed to add $BREWDIR to /etc/environment. Aborting setup." >&2
+  exit 1
+fi
+
+# Package installs (fisher + brew formulas) are one-time work; guard the whole
+# block so re-runs skip it. If anything inside fails, the marker is not
+# recorded and the next run retries.
+# NOTE: the EOF below must be aligned to the very left, and be the only
+# content on its line, with no trailing whitespace.
+if ! step_done "brew-packages"; then
 fish << 'EOF'
-  # Install brew
-  if not type -q brew
-    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  end
-
-  # Setup brew completions in fish shell
-  set -l brew_line 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv fish)"'
-  if not grep -qF -- "$brew_line" /home/ubuntu/.config/fish/config.fish 2>/dev/null
-    echo >> /home/ubuntu/.config/fish/config.fish
-    echo "$brew_line" >> /home/ubuntu/.config/fish/config.fish
-  end
+  # Setup brew
   eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv fish)"
 
   # Install fisher
@@ -106,8 +151,10 @@ fish << 'EOF'
   end
   # fisher install IlanCosman/tide@v6
 
-  brew install neovim yazi btop fastfetch duf uv llama.cpp nvtop chezmoi
+  brew install neovim yazi btop fastfetch duf uv llama.cpp chezmoi zoxide eza fnm git
 EOF
+  record_step "brew-packages"
+fi
 
 # Clone the chezmoi source repo that setup-infra.fish uploaded to
 # ~/.local/chezmoi.git, into the standard source dir, so that a later
@@ -133,8 +180,22 @@ if ! step_done "chezmoi-clone"; then
   fi
 fi
 
-# The above EOF needs to be aligned to the very left, and has to be the only
-# line, with no trailing whitespace
+# Configure the tide prompt (ships via the chezmoi config, not fisher).
+# Must run as ubuntu after `chezmoi update` so the tide functions exist.
+# Guarded by a marker: skipped on re-runs, retried if it failed — and if
+# tide isn't visible yet (no chezmoi config applied), skip without
+# recording so a later run picks it up.
+if ! step_done "tide-configure"; then
+  if sudo -u ubuntu -H fish -c 'type -q tide' < /dev/null 2>/dev/null; then
+    echo "=== Configuring tide prompt ==="
+    sudo -u ubuntu -H fish -c \
+      'tide configure --auto --style=Lean --prompt_colors="True color" --show_time=No --lean_prompt_height="Two lines" --prompt_connection=Disconnected --prompt_spacing=Sparse --icons="Few icons" --transient=Yes' \
+      < /dev/null
+    record_step "tide-configure"
+  else
+    echo "tide not found (chezmoi config not applied yet?); not configuring tide (will configure on a later run)"
+  fi
+fi
 
 # Delete licenses and unneeded files (ignore errors if already removed)
 rm -f BUILD_FROM_SOURCE_PACKAGES_LICENCES LINUX_PACKAGES_LICENSES LINUX_PACKAGES_LIST OSSNvidiaDriver_*_license.txt 
