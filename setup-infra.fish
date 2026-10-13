@@ -139,7 +139,7 @@ begin
     echo "Host aws"
     echo "  HostName $public_ip"
     echo "  User $SSH_USER"
-    echo "  IdentityFile ~/.ssh/id_ed25519"
+    echo "  IdentityAgent ~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
     echo "  StrictHostKeyChecking accept-new"
 end > $aws_hosts_file
 chmod 600 $aws_hosts_file

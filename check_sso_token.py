@@ -24,8 +24,12 @@ profile = sys.argv[1] if len(sys.argv) > 1 else "default"
 # right now doesn't run past a token that dies mid-deploy.
 SAFETY_MARGIN = timedelta(minutes=15)
 
+# Honor AWS_CONFIG_FILE, which the AWS CLI/SDK also use; otherwise the check
+# would read an empty ~/.aws/config and wrongly report "static" for an SSO
+# profile, skipping the login Pulumi's provider actually needs.
+config_path = os.environ.get("AWS_CONFIG_FILE", os.path.expanduser("~/.aws/config"))
 parser = configparser.ConfigParser()
-parser.read(os.path.expanduser("~/.aws/config"))
+parser.read(config_path)
 
 section = f"profile {profile}"
 if not parser.has_section(section):

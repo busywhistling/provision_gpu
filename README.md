@@ -21,7 +21,7 @@ This project creates a GPU EC2 instance in `eu-central-1` using the **Deep Learn
 - Python 3.13 or later installed.
 - [uv](https://docs.astral.sh/uv/) installed.
 - Pulumi CLI already installed and logged in.
-- An SSH public key at `~/.ssh/id_ed25519.pub` (or update the path in `__main__.py`).
+- An SSH key available via the [1Password ssh-agent](https://developer.1password.com/docs/ssh/) (see `IdentityAgent` in `~/.ssh/config`. Verify with `ssh-add -L`). Alternatively, set `GPU_SSH_PUBKEY` to a literal public key.
 
 ## Getting Started
 

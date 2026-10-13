@@ -1,6 +1,8 @@
 """CUDA GPU EC2 instance setup"""
 
+import os
 import pathlib
+import subprocess
 
 import pulumi
 import pulumi_aws as aws
@@ -50,6 +52,69 @@ def resolve_instance_type() -> str:
             f"({', '.join(sorted(GPU_PRESETS))})."
         )
     return raw
+
+
+# --- Key helpers ---
+# The SSH key now lives in 1Password and is served via its ssh-agent socket
+# (see `IdentityAgent` in ~/.ssh/config), not as ~/.ssh/id_ed25519(.pub).
+ONEPASSWORD_AGENT_SOCK = (
+    pathlib.Path.home()
+    / "Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+)
+
+
+def _dedupe(items):
+    """First-seen-order deduplication."""
+    seen, out = set(), []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def get_ssh_public_key() -> str:
+    """Return the SSH public key for the EC2 KeyPair.
+
+    Resolution order:
+    1. `GPU_SSH_PUBKEY` env var (literal key, e.g. "ssh-ed25519 AAAA...").
+    2. Any legacy pub key file on disk (e.g. ~/.ssh/id_ed25519.pub), if present.
+    3. The first key offered by the SSH agent (1Password by default, overridable
+       via `SSH_AUTH_SOCK`).
+    """
+    env_key = os.environ.get("GPU_SSH_PUBKEY", "").strip()
+    if env_key:
+        return env_key
+
+    for candidate in ("~/.ssh/id_ed25519.pub", "~/.ssh/id_ed25519.pub"):
+        path = pathlib.Path(candidate).expanduser()
+        if path.is_file():
+            return path.read_text().strip()
+
+    # SSH_AUTH_SOCK is often set on macOS to the default Apple agent (which
+    # has no keys), so also consult the 1Password agent as a fallback.
+    socks = _dedupe(
+        s for s in (
+            os.environ.get("SSH_AUTH_SOCK"),
+            str(ONEPASSWORD_AGENT_SOCK),
+        ) if s
+    )
+    for sock in socks:
+        result = subprocess.run(
+            ["ssh-add", "-L"],
+            env={**os.environ, "SSH_AUTH_SOCK": sock},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        keys = [line for line in result.stdout.splitlines() if line.strip()]
+        if keys:
+            return keys[0]
+
+    raise RuntimeError(
+        "No SSH public key available. Unlock 1Password so its ssh-agent "
+        "serves a key (check with `ssh-add -L`), or set GPU_SSH_PUBKEY."
+    )
 
 
 def setup_instance():
@@ -109,10 +174,10 @@ def setup_instance():
     )
 
     # --- Key Pair (optional but recommended for SSH) ---
-    # Replace with your actual public key, or remove key_name to skip SSH
+    # Public key comes from the 1Password ssh-agent (see get_ssh_public_key).
     key_pair = aws.ec2.KeyPair(
         "gpu-ssh-key",
-        public_key=open("~/.ssh/id_ed25519.pub").read(),
+        public_key=get_ssh_public_key(),
     )
 
     # --- GPU Instance ---
