@@ -12,30 +12,30 @@ set SSH_OPTS -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerA
 
 # --- Helper: print GPU instance type usage (presets + EC2 families) ---
 function print_gpu_usage --description "Show available GPU instance type options"
-    echo "Usage: just setup <gpu_type>"
-    echo ""
-    echo "Named presets:"
-    echo "  t4       g4dn.xlarge    1x NVIDIA T4 16 GB                 (~\$0.53/hr)"
-    echo "  a10g     g5.xlarge      1x NVIDIA A10G 24 GB               (~\$1.01/hr)"
-    echo "  l40s     g6e.xlarge     1x NVIDIA L40S 48 GB               (~\$1.60/hr)"
-    echo "  rtx6000  g7e.2xlarge    1x RTX PRO 6000 Blackwell 96 GB    (~\$3.40+/hr)"
-    echo ""
-    echo "Or any full EC2 GPU instance type (validated against these families):"
-    echo "  g4ad g4dn g5 g5g g6 g6e g7 g7e p3 p4d p4de p5 p5e p5en"
-    echo ""
-    echo "Examples:"
-    echo "  just setup t4"
-    echo "  just setup rtx6000"
-    echo "  just setup g7e.12xlarge   (2x RTX PRO 6000)"
+  echo "Usage: just setup <gpu_type>"
+  echo ""
+  echo "Named presets:"
+  echo "  t4       g4dn.xlarge    1x NVIDIA T4 16 GB                 (~\$0.53/hr)"
+  echo "  a10g     g5.xlarge      1x NVIDIA A10G 24 GB               (~\$1.01/hr)"
+  echo "  l40s     g6e.xlarge     1x NVIDIA L40S 48 GB               (~\$1.60/hr)"
+  echo "  rtx6000  g7e.2xlarge    1x RTX PRO 6000 Blackwell 96 GB    (~\$3.40+/hr)"
+  echo ""
+  echo "Or any full EC2 GPU instance type (validated against these families):"
+  echo "  g4ad g4dn g5 g5g g6 g6e g7 g7e p3 p4d p4de p5 p5e p5en"
+  echo ""
+  echo "Examples:"
+  echo "  just setup t4"
+  echo "  just setup rtx6000"
+  echo "  just setup g7e.12xlarge   (2x RTX PRO 6000)"
 end
 
 # --- Require the GPU instance type argument ---
 set gpu_type $argv[1]
 if test -z "$gpu_type"
-    echo "Error: GPU instance type is required — there is no default."
-    echo ""
-    print_gpu_usage
-    exit 1
+  echo "Error: GPU instance type is required — there is no default."
+  echo ""
+  print_gpu_usage
+  exit 1
 end
 
 # --- Ensure we're in the script's directory ---
@@ -43,20 +43,20 @@ cd (dirname (status --current-filename))
 
 # --- Helper: wait for SSH port to be reachable ---
 function wait_for_ssh --description "Wait until SSH port is open on the given host"
-    set -l host $argv[1]
-    set -l start_time (date +%s)
-    while true
-        set -l elapsed (math (date +%s) - $start_time)
-        if test $elapsed -ge $SSH_TIMEOUT
-            echo "Error: SSH did not become available within $SSH_TIMEOUT seconds."
-            return 1
-        end
-        if nc -z -w 5 $host 22 2>/dev/null
-            return 0
-        end
-        echo "  Waiting for SSH... ($elapsed s elapsed)"
-        sleep 10
+  set -l host $argv[1]
+  set -l start_time (date +%s)
+  while true
+    set -l elapsed (math (date +%s) - $start_time)
+    if test $elapsed -ge $SSH_TIMEOUT
+      echo "Error: SSH did not become available within $SSH_TIMEOUT seconds."
+      return 1
     end
+    if nc -z -w 5 $host 22 2>/dev/null
+      return 0
+    end
+    echo "  Waiting for SSH... ($elapsed s elapsed)"
+    sleep 10
+  end
 end
 
 # --- 1. Check AWS SSO login ---
@@ -65,7 +65,7 @@ end
 # wrong profile can pass while Pulumi's own profile has an expired SSO session.
 set pulumi_profile (uv run pulumi config get aws:profile --stack $PULUMI_STACK 2>/dev/null)
 if test -z "$pulumi_profile"
-    set pulumi_profile $AWS_PROFILE
+  set pulumi_profile $AWS_PROFILE
 end
 
 echo "Checking AWS SSO login for profile '$pulumi_profile'..."
@@ -77,34 +77,45 @@ echo "Checking AWS SSO login for profile '$pulumi_profile'..."
 # SSO token file itself (check_sso_token.py) instead of a CLI call.
 set sso_state (python3 (status dirname)/check_sso_token.py $pulumi_profile 2>/dev/null)
 switch $sso_state
-    case "expired"
-        echo "AWS SSO session expired. Logging in (browser will open)..."
+  case "expired"
+    echo "AWS SSO session expired. Logging in (browser will open)..."
+    aws sso login --profile $pulumi_profile
+    or exit 1
+    echo "AWS SSO login successful."
+  case "static"
+    echo "Profile '$pulumi_profile' does not use SSO; no SSO login needed."
+  case "*"
+    if test -z "$sso_state"
+      # Checker could not run — fall back to the CLI check.
+      if not aws sts get-caller-identity --profile $pulumi_profile >/dev/null 2>&1
+        echo "AWS SSO session expired or not logged in. Logging in..."
         aws sso login --profile $pulumi_profile
         or exit 1
         echo "AWS SSO login successful."
-    case "static"
-        echo "Profile '$pulumi_profile' does not use SSO; no SSO login needed."
-    case "*"
-        if test -z "$sso_state"
-            # Checker could not run — fall back to the CLI check.
-            if not aws sts get-caller-identity --profile $pulumi_profile >/dev/null 2>&1
-                echo "AWS SSO session expired or not logged in. Logging in..."
-                aws sso login --profile $pulumi_profile
-                or exit 1
-                echo "AWS SSO login successful."
-            end
-        else
-            echo "AWS SSO already logged in."
-        end
+      end
+    else
+      echo "AWS SSO already logged in."
+    end
 end
 
 # --- 2. Get Pulumi passphrase and EC2 password from 1Password ---
 echo "Retrieving secrets from 1Password..."
 set pulumi_passphrase (op read "op://Private/Pulumi/passphrase")
 or exit 1
+set -x PULUMI_CONFIG_PASSPHRASE $pulumi_passphrase
 set ec2_password (op read "op://Private/EC2/password")
 or exit 1
 set -x EC2_USER_PASSWORD $ec2_password
+
+# --- 2b. Create the stack on first run ---
+# With the passphrase secrets provider, stack init writes a fresh
+# encryptionsalt into Pulumi.<stack>.yaml. The salt is generated here, not
+# stored in the repository.
+if not uv run pulumi stack select $PULUMI_STACK >/dev/null 2>&1
+  echo "Stack '$PULUMI_STACK' not found; creating it..."
+  uv run pulumi stack init $PULUMI_STACK --secrets-provider passphrase
+  or exit 1
+end
 
 # --- 3. Run pulumi up ---
 echo "Setting GPU instance type to '$gpu_type'..."
@@ -112,7 +123,6 @@ uv run pulumi config set --stack $PULUMI_STACK gpu:instance_type $gpu_type
 or exit 1
 
 echo "Running pulumi..."
-set -x PULUMI_CONFIG_PASSPHRASE $pulumi_passphrase
 uv run pulumi up --stack $PULUMI_STACK --yes
 or exit 1
 
@@ -135,26 +145,26 @@ mkdir -p $ssh_dir
 ssh-keygen -R $public_ip > /dev/null 2>&1
 
 begin
-    echo "# Managed by provision_gpu/setup-infra.fish — do not edit"
-    echo "Host aws"
-    echo "  HostName $public_ip"
-    echo "  User $SSH_USER"
-    echo "  IdentityAgent ~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-    echo "  StrictHostKeyChecking accept-new"
+  echo "# Managed by provision_gpu/setup-infra.fish — do not edit"
+  echo "Host aws"
+  echo "  HostName $public_ip"
+  echo "  User $SSH_USER"
+  echo "  IdentityAgent ~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+  echo "  StrictHostKeyChecking accept-new"
 end > $aws_hosts_file
 chmod 600 $aws_hosts_file
 
 # One-time: include the managed file from ~/.ssh/config (prepend, so it
 # takes effect before any later Host * block).
 if not test -f $ssh_dir/config
-    echo "Include ~/.ssh/aws_hosts" > $ssh_dir/config
-    chmod 600 $ssh_dir/config
+  echo "Include ~/.ssh/aws_hosts" > $ssh_dir/config
+  chmod 600 $ssh_dir/config
 else if not grep -qF ".ssh/aws_hosts" $ssh_dir/config
-    set -l tmp (mktemp)
-    echo "Include ~/.ssh/aws_hosts" > $tmp
-    cat $ssh_dir/config >> $tmp
-    mv $tmp $ssh_dir/config
-    chmod 600 $ssh_dir/config
+  set -l tmp (mktemp)
+  echo "Include ~/.ssh/aws_hosts" > $tmp
+  cat $ssh_dir/config >> $tmp
+  mv $tmp $ssh_dir/config
+  chmod 600 $ssh_dir/config
 end
 echo "SSH alias registered: ssh aws → ubuntu@$public_ip"
 
@@ -176,12 +186,12 @@ set -l local_head (git -C $chezmoi_src rev-parse HEAD 2>/dev/null)
 set -l remote_head (ssh $SSH_OPTS $SSH_USER@$public_ip \
     "git -C ~/.local/chezmoi.git rev-parse HEAD 2>/dev/null" < /dev/null)
 if test -n "$local_head"; and test "$local_head" = "$remote_head"
-    echo "chezmoi.git already up to date (HEAD $local_head); skipping upload."
+  echo "chezmoi.git already up to date (HEAD $local_head); skipping upload."
 else
-    echo "Uploading chezmoi source repo to $SSH_USER@$public_ip:~/.local/chezmoi.git..."
-    ssh $SSH_OPTS $SSH_USER@$public_ip "mkdir -p ~/.local"
-    scp $SSH_OPTS -r $chezmoi_src $SSH_USER@$public_ip:.local/chezmoi.git
-    or exit 1
+  echo "Uploading chezmoi source repo to $SSH_USER@$public_ip:~/.local/chezmoi.git..."
+  ssh $SSH_OPTS $SSH_USER@$public_ip "mkdir -p ~/.local"
+  scp $SSH_OPTS -r $chezmoi_src $SSH_USER@$public_ip:.local/chezmoi.git
+  or exit 1
 end
 
 # --- 5c. Copy Ghostty's terminfo entry to the instance ---
@@ -197,16 +207,16 @@ end
 # fish's shell-init on the instance would consume it. So infocmp output
 # goes base64-encoded through the command line, and tic compiles a file.
 function _ghostty_terminfo_source --description "Terminfo source for xterm-ghostty, via infocmp"
-    for cmp in infocmp /opt/homebrew/opt/ncurses/bin/infocmp /usr/local/opt/ncurses/bin/infocmp
-        if command -q $cmp
-            set -l src ($cmp -x xterm-ghostty 2>/dev/null)
-            if test (count $src) -gt 0
-                string join \n -- $src
-                return 0
-            end
-        end
+  for cmp in infocmp /opt/homebrew/opt/ncurses/bin/infocmp /usr/local/opt/ncurses/bin/infocmp
+    if command -q $cmp
+      set -l src ($cmp -x xterm-ghostty 2>/dev/null)
+      if test (count $src) -gt 0
+        string join \n -- $src
+        return 0
+      end
     end
-    return 1
+  end
+  return 1
 end
 
 # Idempotent: skip if the instance already has the xterm-ghostty entry
@@ -215,17 +225,17 @@ echo "Installing Ghostty terminfo on the instance..."
 set -l terminfo_present (ssh $SSH_OPTS $SSH_USER@$public_ip \
     "infocmp -x xterm-ghostty > /dev/null 2>&1 && echo ok" < /dev/null 2>/dev/null)
 if test "$terminfo_present" = "ok"
-    echo "xterm-ghostty terminfo already installed; skipping."
+  echo "xterm-ghostty terminfo already installed; skipping."
 else if not _ghostty_terminfo_source > /dev/null
-    echo "No xterm-ghostty terminfo found locally (is Ghostty installed?); skipping."
+  echo "No xterm-ghostty terminfo found locally (is Ghostty installed?); skipping."
 else
-    set -l b64 (_ghostty_terminfo_source | base64 | tr -d '\n')
-    ssh $SSH_OPTS $SSH_USER@$public_ip \
-        "echo $b64 | base64 -d > /tmp/ghostty.terminfo \
+  set -l b64 (_ghostty_terminfo_source | base64 | tr -d '\n')
+  ssh $SSH_OPTS $SSH_USER@$public_ip \
+    "echo $b64 | base64 -d > /tmp/ghostty.terminfo \
          && sudo tic -x /tmp/ghostty.terminfo \
          && rm -f /tmp/ghostty.terminfo \
          && infocmp -x xterm-ghostty > /dev/null && echo terminfo-ok" \
-        < /dev/null
+    < /dev/null
 end
 
 # --- 6. SSH and run setup-host.sh ---
@@ -243,41 +253,41 @@ scp $SSH_OPTS $SETUP_SCRIPT $SSH_USER@$public_ip:/tmp/setup-host.sh
 or exit 1
 set ssh_log_file (mktemp)
 ssh $SSH_OPTS $SSH_USER@$public_ip \
-    "env EC2_USER_PASSWORD='$ec2_password' bash /tmp/setup-host.sh < /dev/null" 2>&1 | tee $ssh_log_file
+  "env EC2_USER_PASSWORD='$ec2_password' bash /tmp/setup-host.sh < /dev/null" 2>&1 | tee $ssh_log_file
 set ssh_exit $pipestatus[1]
 set ssh_output (cat $ssh_log_file)
 rm $ssh_log_file
 
 if test $ssh_exit -ne 0 -a $ssh_exit -ne 255
-    echo "Error: setup-host.sh failed with exit code $ssh_exit."
-    exit 1
+  echo "Error: setup-host.sh failed with exit code $ssh_exit."
+  exit 1
 end
 
 # --- 7. Detect reboot from output and wait accordingly ---
 if string match -q "*REBOOTING*" -- (string collect -- $ssh_output)
-    echo "Reboot triggered, waiting for SSH to go down..."
+  echo "Reboot triggered, waiting for SSH to go down..."
 
-    # Wait for SSH to go down (reboot may not have started yet)
-    set down_start (date +%s)
-    while true
-        set elapsed (math (date +%s) - $down_start)
-        if test $elapsed -ge 60
-            echo "SSH still up after 60s — reboot may have already completed."
-            break
-        end
-        if not nc -z -w 5 $public_ip 22 2>/dev/null
-            echo "SSH is down (rebooting)..."
-            break
-        end
-        sleep 5
+  # Wait for SSH to go down (reboot may not have started yet)
+  set down_start (date +%s)
+  while true
+    set elapsed (math (date +%s) - $down_start)
+    if test $elapsed -ge 60
+      echo "SSH still up after 60s — reboot may have already completed."
+      break
     end
+    if not nc -z -w 5 $public_ip 22 2>/dev/null
+      echo "SSH is down (rebooting)..."
+      break
+    end
+    sleep 5
+  end
 
-    echo "Waiting for SSH to come back..."
-    wait_for_ssh $public_ip
-    or exit 1
-    echo "SSH is back up! Reboot complete."
+  echo "Waiting for SSH to come back..."
+  wait_for_ssh $public_ip
+  or exit 1
+  echo "SSH is back up! Reboot complete."
 else
-    echo "setup-host.sh completed (no reboot needed)."
+  echo "setup-host.sh completed (no reboot needed)."
 end
 
 # --- 8. Verify setup completed on the remote ---
@@ -285,8 +295,8 @@ sleep 5
 echo "Verifying setup completion..."
 set verify (ssh $SSH_OPTS $SSH_USER@$public_ip "test -f /var/lib/.setup-host-done && echo ok || echo fail" 2>/dev/null; or echo "fail")
 if test "$verify" != "ok"
-    echo "Error: Setup flag not found on remote. Setup may not have completed."
-    exit 1
+  echo "Error: Setup flag not found on remote. Setup may not have completed."
+  exit 1
 end
 
 echo "Setup complete! Instance is ready at $public_ip"

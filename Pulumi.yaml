@@ -1,5 +1,5 @@
 name: gpu-instance
-description: A minimal AWS Python Pulumi program
+description: Provision a GPU EC2 instance on AWS
 runtime:
   name: python
   options:
