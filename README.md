@@ -21,7 +21,7 @@ This project creates a GPU EC2 instance in `eu-central-1` using the **Deep Learn
 - Python 3.14 or later installed.
 - [uv](https://docs.astral.sh/uv/) installed.
 - Pulumi CLI already installed and logged in.
-- [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) if you use the provided `Justfile` and `setup-infra.fish`. They read `op://Private/Pulumi/passphrase` and `op://Private/EC2/password` — point these at your own secret references.
+- [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) if you use the provided `Justfile` and `setup-infra.fish`. They read the secret references from `.env` — copy `.env.sample` and point `PULUMI_PASSPHRASE_SECRET_REF` and `EC2_PASSWORD_SECRET_REF` at your own 1Password items.
 - An SSH key available to your SSH agent (verify with `ssh-add -L`). Alternatively, set `GPU_SSH_PUBKEY` to a literal public key.
 
 ## Getting Started

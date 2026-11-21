@@ -86,7 +86,7 @@ def get_ssh_public_key() -> str:
     if env_key:
         return env_key
 
-    for candidate in ("~/.ssh/id_ed25519.pub", "~/.ssh/id_ed25519.pub"):
+    for candidate in ("~/.ssh/id_ed25519.pub", "~/.ssh/id_rsa.pub"):
         path = pathlib.Path(candidate).expanduser()
         if path.is_file():
             return path.read_text().strip()

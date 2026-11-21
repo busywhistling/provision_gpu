@@ -99,11 +99,29 @@ switch $sso_state
 end
 
 # --- 2. Get Pulumi passphrase and EC2 password from 1Password ---
+# Secret references come from the environment, so no vault paths are hardcoded
+# in this public repo. Load .env (dotenv syntax, which fish can't source) into
+# the environment first; variables already set win over the file.
+if test -f .env
+  for line in (string match -rv '^\s*(#|$)' < .env)
+    set -l kv (string split -m1 = -- $line)
+    set -q $kv[1]; and continue
+    set -gx $kv[1] (string trim -c '"' -- $kv[2])
+  end
+end
+
+for var in PULUMI_PASSPHRASE_SECRET_REF EC2_PASSWORD_SECRET_REF
+  if not set -q $var
+    echo "Error: $var is not set. Copy .env.sample to .env and point both secret references at your own 1Password items."
+    exit 1
+  end
+end
+
 echo "Retrieving secrets from 1Password..."
-set pulumi_passphrase (op read "op://Private/Pulumi/passphrase")
+set pulumi_passphrase (op read $PULUMI_PASSPHRASE_SECRET_REF)
 or exit 1
 set -x PULUMI_CONFIG_PASSPHRASE $pulumi_passphrase
-set ec2_password (op read "op://Private/EC2/password")
+set ec2_password (op read $EC2_PASSWORD_SECRET_REF)
 or exit 1
 set -x EC2_USER_PASSWORD $ec2_password
 

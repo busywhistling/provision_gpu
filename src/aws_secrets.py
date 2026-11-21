@@ -52,7 +52,3 @@ def _resolve_password() -> str:
 
 
 EC2_USER_PASSWORD = _resolve_password()
-
-
-if __name__ == "__main__":
-  print(EC2_USER_PASSWORD)
